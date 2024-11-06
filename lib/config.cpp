@@ -398,7 +398,7 @@ std::tuple<json, int> Config::load_and_validate_with_schema(const fs::path& file
 Config::Config(std::shared_ptr<RuntimeSettings> rs) : Config(rs, false) {
 }
 
-Config::Config(std::shared_ptr<RuntimeSettings> rs, bool manager) : rs(rs), manager(manager) {
+Config::Config(std::shared_ptr<RuntimeSettings> rs, bool manager) : rs(rs), manager(manager), error_map{nullptr} {
     BOOST_LOG_FUNCTION();
 
     this->manifests = json({});
@@ -407,7 +407,7 @@ Config::Config(std::shared_ptr<RuntimeSettings> rs, bool manager) : rs(rs), mana
     this->types = json({});
     this->errors = json({});
     this->_schemas = Config::load_schemas(this->rs->schemas_dir);
-    this->error_map = error::ErrorTypeMap(this->rs->errors_dir);
+    this->error_map = std::make_shared<error::ErrorTypeMap>(error::ErrorTypeMap(this->rs->errors_dir));
 
     // load and process config file
     fs::path config_path = rs->config_file;
@@ -552,7 +552,7 @@ Config::Config(std::shared_ptr<RuntimeSettings> rs, bool manager) : rs(rs), mana
     parse_3_tier_model_mapping();
 }
 
-error::ErrorTypeMap Config::get_error_map() const {
+error::ErrorTypeMap::ConstPtr Config::get_error_map() const {
     return this->error_map;
 }
 

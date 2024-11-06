@@ -5,7 +5,6 @@
 
 #include <utils/error.hpp>
 #include <utils/error/error_database.hpp>
-#include <utils/error/error_type_map.hpp>
 
 #include <everest/logging.hpp>
 
@@ -15,7 +14,7 @@
 namespace Everest {
 namespace error {
 
-ErrorManagerImpl::ErrorManagerImpl(std::shared_ptr<ErrorTypeMap> error_type_map_,
+ErrorManagerImpl::ErrorManagerImpl(ErrorTypeMap::ConstPtr error_type_map_,
                                    std::shared_ptr<ErrorDatabase> error_database_,
                                    std::list<ErrorType> allowed_error_types_,
                                    ErrorManagerImpl::PublishErrorFunc publish_raised_error_,
