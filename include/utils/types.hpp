@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fmt/core.h>
+#include <future>
 #include <map>
 #include <optional>
 #include <string>

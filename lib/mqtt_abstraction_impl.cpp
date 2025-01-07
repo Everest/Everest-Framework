@@ -155,6 +155,13 @@ void MQTTAbstractionImpl::publish(const std::string& topic, const std::string& d
 
     if (retain) {
         publish_flags |= MQTT_PUBLISH_RETAIN;
+        if (not(data.empty() and qos == QOS::QOS0)) {
+            // topic should be retained, so save the topic in retained_topics
+            // do not save the topic when the payload is empty and QOS is set to 0 which means a retained topic is to be
+            // cleared
+            const std::lock_guard<std::mutex> lock(retained_topics_mutex);
+            this->retained_topics.push_back(topic);
+        }
     }
 
     if (!this->mqtt_is_connected) {
@@ -207,38 +214,16 @@ void MQTTAbstractionImpl::unsubscribe(const std::string& topic) {
     notify_write_data();
 }
 
-json MQTTAbstractionImpl::get(const std::string& topic, QOS qos) {
+void MQTTAbstractionImpl::clear_retained_topics() {
     BOOST_LOG_FUNCTION();
-    std::promise<json> res_promise;
-    std::future<json> res_future = res_promise.get_future();
+    const std::lock_guard<std::mutex> lock(retained_topics_mutex);
 
-    const auto res_handler = [this, &res_promise](const std::string& topic, json data) {
-        res_promise.set_value(std::move(data));
-    };
-
-    const std::shared_ptr<TypedHandler> res_token =
-        std::make_shared<TypedHandler>(HandlerType::GetConfig, std::make_shared<Handler>(res_handler));
-    this->register_handler(topic, res_token, QOS::QOS2);
-
-    // wait for result future
-    const std::chrono::time_point<std::chrono::steady_clock> res_wait =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(mqtt_get_timeout_ms);
-    std::future_status res_future_status;
-    do {
-        res_future_status = res_future.wait_until(res_wait);
-    } while (res_future_status == std::future_status::deferred);
-
-    json result;
-    if (res_future_status == std::future_status::timeout) {
-        this->unregister_handler(topic, res_token);
-        EVLOG_AND_THROW(EverestTimeoutError(fmt::format("Timeout while waiting for result of get()")));
+    for (const auto& retained_topic : retained_topics) {
+        this->publish(retained_topic, std::string(), QOS::QOS0, true);
+        EVLOG_verbose << "Cleared retained topic: " << retained_topic;
     }
-    if (res_future_status == std::future_status::ready) {
-        result = res_future.get();
-    }
-    this->unregister_handler(topic, res_token);
 
-    return result;
+    retained_topics.clear();
 }
 
 void MQTTAbstractionImpl::notify_write_data() {
@@ -364,9 +349,11 @@ void MQTTAbstractionImpl::on_mqtt_message(const Message& message) {
         }
         lock.unlock();
 
+        // TODO(kai): this should maybe not even be a warning since it can happen that we unsubscribe from a topic and
+        // have removed the message handler but the MQTT unsubscribe didn't complete yet and we still receive messages
+        // on this topic that we can just ignore
         if (!found) {
-            EVLOG_AND_THROW(
-                EverestInternalError(fmt::format("Internal error: topic '{}' should have a matching handler!", topic)));
+            EVLOG_warning << fmt::format("Internal error: topic '{}' should have a matching handler!", topic);
         }
     } catch (boost::exception& e) {
         EVLOG_critical << fmt::format("Caught MQTT on_message boost::exception:\n{}",
@@ -409,7 +396,8 @@ void MQTTAbstractionImpl::on_mqtt_disconnect() {
     EVLOG_AND_THROW(EverestInternalError("Lost connection to MQTT broker"));
 }
 
-void MQTTAbstractionImpl::register_handler(const std::string& topic, std::shared_ptr<TypedHandler> handler, QOS qos) {
+void MQTTAbstractionImpl::register_handler(const std::string& topic, const std::shared_ptr<TypedHandler>& handler,
+                                           QOS qos) {
     BOOST_LOG_FUNCTION();
 
     switch (handler->type) {
@@ -451,15 +439,15 @@ void MQTTAbstractionImpl::register_handler(const std::string& topic, std::shared
     if (this->message_handlers.count(topic) == 0) {
         this->message_handlers.emplace(std::piecewise_construct, std::forward_as_tuple(topic), std::forward_as_tuple());
     }
-    this->message_handlers[topic].add_handler(handler);
+    this->message_handlers.at(topic).add_handler(handler);
 
     // only subscribe for this topic if we aren't already and the mqtt client is connected
     // if we are not connected the on_mqtt_connect() callback will subscribe to the topic
-    if (this->mqtt_is_connected && this->message_handlers[topic].count_handlers() == 1) {
+    if (this->mqtt_is_connected && this->message_handlers.at(topic).count_handlers() == 1) {
         EVLOG_verbose << fmt::format("Subscribing to {}", topic);
         this->subscribe(topic, qos);
     }
-    EVLOG_verbose << fmt::format("#handler[{}] = {}", topic, this->message_handlers[topic].count_handlers());
+    EVLOG_verbose << fmt::format("#handler[{}] = {}", topic, this->message_handlers.at(topic).count_handlers());
 }
 
 void MQTTAbstractionImpl::unregister_handler(const std::string& topic, const Token& token) {
@@ -484,6 +472,7 @@ void MQTTAbstractionImpl::unregister_handler(const std::string& topic, const Tok
             EVLOG_verbose << fmt::format("Unsubscribing from {}", topic);
             this->unsubscribe(topic);
         }
+        this->message_handlers.erase(topic);
     }
 
     const std::string handler_count = (number_of_handlers == 0) ? "None" : std::to_string(number_of_handlers);
